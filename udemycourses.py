@@ -3,9 +3,11 @@ from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, NoSuchElementException, ElementClickInterceptedException, StaleElementReferenceException
+from selenium.common.exceptions import TimeoutException, NoSuchElementException, ElementClickInterceptedException
+from selenium.common.exceptions import StaleElementReferenceException, ElementNotInteractableException
 
 import time
+from tqdm import tqdm
 import pandas as pd
 
 
@@ -42,77 +44,103 @@ def scraper(search_term='python machine learning', filter_category='Machine Lear
 
     visited_links.extend(previous_links)  # merge user given links into one list
 # ===========================Start Searching=====================================
-    browser = webdriver.Chrome()
+    options = webdriver.ChromeOptions()
+    options.add_argument('headless')
+    options.add_argument('window-size=1920x1080')
+    options.add_argument("disable-gpu")
+    browser = webdriver.Chrome('chromedriver', chrome_options=options)
     browser.get('http://www.udemy.com')
 
-    try:
-        elem = WebDriverWait(browser, 5).until(EC.visibility_of_element_located((By.NAME, "q")))
-    except TimeoutException:
-        print("Taking much too long to load. Please check your internet connection.")
-
+    print('Sending search query...')
+    message = "Taking much too long to load. Please check your internet connection."
+    elem = WebDriverWait(browser, 3).until(
+        EC.visibility_of_element_located((By.NAME, "q")), message=message)
     elem.send_keys(search_term + Keys.RETURN)
 
+    time.sleep(1)
     # check for issues that the search yield no results.
-    try:
-        WebDriverWait(browser, 5).until(EC.visibility_of_any_elements_located(
-            (By.XPATH, "//div[@class='panel--content-wrapper--1yFBX']//fieldset[@name='Topic']")))
-    except TimeoutException:
-        print("Encounter a problem retrieving search results. Please check if search_term and filter_category are valid.")
+    message = "Encounter a problem while attempting to refine search results. Unable to locate filter."
+    WebDriverWait(browser, 3).until(EC.visibility_of_any_elements_located(
+        (By.XPATH, "//div[@class='filter-panel--sidebar--L2lAU'] | //button[contains(@class,'filter-button--filter-button--y-iVA')]")), message=message)
 
-    add_filter(browser, filter_category)
+    try:
+        filterbutton = browser.find_element_by_xpath(
+            "//button[contains(@class,'filter-button--filter-button--y-iVA')]")
+        browser.execute_script("arguments[0].click();", filterbutton)
+    except NoSuchElementException:
+        panel_filter_add(browser, filter_category)
+    else:
+        overlay_filter_add(browser, filter_category)
 # =================First Filtered Search Results Page Returned===================
-    time.sleep(2)
+    time.sleep(1)
     # access links of search results
-    courses_links = browser.find_elements_by_class_name("udlite-custom-focus-visible")
+    courses_links = browser.find_elements_by_xpath(
+        "//div[@class='course-list--container--3zXPS']//a[contains(@class,'udlite-custom-focus-visible')] | //div[@data-purpose='search-course-cards']//a")
     links = [c.get_attribute("href") for c in courses_links]
     nextpage = get_nextpage(browser)  # access link to next page of search results
+
 # =======================Iteratively Scrape Links================================
     page_count = 1
+    print(f'Iterating through page {page_count} of filtered search results...')
     df, courses = scrape_links_navigator(browser, df, cols, courses, links, visited_links)
     print(
-        f'Finished with all course listings on page {page_count}! {len(courses)} {search_term} courses scraped so far.')
+        f'Finished with all course listings on page {page_count}! {len(courses)} courses scraped so far.')
 
     while nextpage:
+        print(f'Iterating through page {page_count + 1} of filtered search results...')
         df, courses, page_count, nextpage = listings_page_iterator(browser, nextpage, page_count, df,
                                                                    cols, courses, links, visited_links)
         print(
-            f'Finished with all course listings on page {page_count}! {len(courses)} {search_term} courses scraped so far.')
+            f'Finished with all course listings on page {page_count}! {len(courses)} courses scraped so far.')
 
     browser.quit()
     print('All done!')
     return df, pd.DataFrame(courses)
 
 
-def add_filter(browser, filter_category):
+def panel_filter_add(browser, filter_category):
     """
 
     This adds filter to narrow down the search results using the filter_category provided.
     It also adds a filter to limit the language of the courses to English.
 
     """
+    print('Filtering search results...')
     # attempt to expand the Topic menu list
     while True:
         try:
-            expandlist = browser.find_element_by_xpath(
-                "//label[contains(text(),'Topic')]/following-sibling::node()//label[@role='button']")
-            expandlist.click()
-            break
-        except NoSuchElementException:
-            expose_filter_menu(browser, 'Topic')
-        except ElementClickInterceptedException:
+            expandlist = WebDriverWait(browser, 3).until(EC.visibility_of_element_located(
+                (By.XPATH, "//label[contains(text(),'Topic')]/following-sibling::node()//label[@role='button']")))
             browser.execute_script("arguments[0].click();", expandlist)
             break
+        except TimeoutException:
+            try:
+                expose_filter_menu(browser, 'Topic')
+                continue
+            except ValueError:
+                break
+
     # find the checkbox that match the filter category and attempt to mark it
     filtercat = browser.find_elements_by_xpath(
         "//div[@class='panel--content-wrapper--1yFBX']//fieldset[@name='Topic']//span[@class='filter--count--33UW8']/parent::node()")
-    indc = [cat.text.split("(")[0] for cat in filtercat].index(filter_category)
+    try:
+        indc = [cat.text.split("(")[0] for cat in filtercat].index(filter_category)
+    except ValueError:
+        catlist = ', '.join([cat.text.split("(")[0] for cat in filtercat])
+        browser.quit()
+        raise ValueError(
+            f"Encountered a problem while filtering search results. Unable to filter by the category given. Categories::{catlist}")
+
     checkbox = browser.find_elements_by_xpath(
         "//div[@class='panel--content-wrapper--1yFBX']//fieldset[@name='Topic']//input")[indc]
-    try:
-        checkbox.click()
-    except ElementClickInterceptedException:
-        browser.execute_script("arguments[0].click();", checkbox)
+    browser.execute_script("arguments[0].click();", checkbox)
 
+    time.sleep(1)
+    gotofix = browser.find_element_by_xpath(
+        "//div[@class='filter-button-container--button-bar--DU5FK'] | //div[@class='filter-panel--container--aq5nC']")
+    browser.execute_script("arguments[0].scrollIntoView();", gotofix)
+
+    time.sleep(1)
     expose_filter_menu(browser, 'Language')
     # attempt to mark the English language checkbox
     filterlang = browser.find_elements_by_xpath(
@@ -120,10 +148,12 @@ def add_filter(browser, filter_category):
     indl = [lang.text.split("(")[0] for lang in filterlang].index('English')
     checkbox = browser.find_elements_by_xpath(
         "//div[@class='panel--content-wrapper--1yFBX']//fieldset[@name='Language']//input")[indl]
-    try:
-        checkbox.click()
-    except ElementClickInterceptedException:
-        browser.execute_script("arguments[0].click();", checkbox)
+    browser.execute_script("arguments[0].click();", checkbox)
+
+    time.sleep(1)
+    gotofix = browser.find_element_by_xpath(
+        "//div[@class='filter-button-container--button-bar--DU5FK'] | //div[@class='filter-panel--container--aq5nC']")
+    browser.execute_script("arguments[0].scrollIntoView();", gotofix)
 
 
 def get_nextpage(browser):
@@ -134,10 +164,19 @@ def get_nextpage(browser):
     """
 
     try:
-        return browser.find_element_by_xpath(
-            "//div[@class='pagination--container--2wc6Z']//a[@data-page='+1']").get_attribute("href")
-    except NoSuchElementException:
+        nextpage = WebDriverWait(browser, 3).until(EC.presence_of_element_located(
+            (By.XPATH, "//div[@class='pagination--container--2wc6Z']//a[@data-page='+1'] | //span[@aria-label='Next']/parent::node()"))).get_attribute("href")
+    except (NoSuchElementException, TimeoutException):
         return None
+    try:
+        attribute_value = browser.find_element_by_xpath(
+            "//ul[@class='pagination pagination-expanded']/li[last()]").get_attribute("class")
+    except NoSuchElementException:
+        return nextpage
+    else:
+        if attribute_value:
+            return None
+        return nextpage
 
 
 def scrape_links_navigator(browser, df, cols, courses, links, visited_links):
@@ -147,7 +186,7 @@ def scrape_links_navigator(browser, df, cols, courses, links, visited_links):
 
     """
 
-    for link in links:
+    for link in tqdm(links):
         if link not in visited_links:  # scrape links only if not in list
             browser.get(link)
             proceed, courses = course_scraper(browser, courses, link)
@@ -168,15 +207,28 @@ def listings_page_iterator(browser, nextpage, page_count, df, cols, courses, lin
 
     browser.get(nextpage)
     page_count += 1
+    # trick to force javascript to expose elements in the DOM
+    while True:
+        try:
+            time.sleep(1)
+            gotofix = browser.find_element_by_xpath(
+                "//div[@class='filter-button-container--button-bar--DU5FK'] | //div[@class='filter-panel--container--aq5nC']")
+            browser.execute_script("arguments[0].scrollIntoView();", gotofix)
+            break
+        except NoSuchElementException:
+            browser.execute_script("window.scrollTo(0,document.body.scrollHeight)")
+            continue
     # check for new search results and next search result link.
     try:
-        WebDriverWait(browser, 5).until(EC.visibility_of_any_elements_located(
-            (By.CLASS_NAME, "udlite-custom-focus-visible")))
+        WebDriverWait(browser, 3).until(EC.visibility_of_any_elements_located(
+            (By.XPATH, "//div[@class='course-list--container--3zXPS']//a[contains(@class,'udlite-custom-focus-visible')]  | //div[@data-purpose='search-course-cards']//a")))
     except TimeoutException:
         nextpage = get_nextpage(browser)
-        return df, courses  # end scraper if no new search results and no next search result link
+        # end scraper if no new search results and no next search result link
+        return df, courses, page_count, nextpage
 
-    courses_links = browser.find_elements_by_class_name("udlite-custom-focus-visible")
+    courses_links = browser.find_elements_by_xpath(
+        "//div[@class='course-list--container--3zXPS']//a[contains(@class,'udlite-custom-focus-visible')] | //div[@data-purpose='search-course-cards']//a")
     links = [c.get_attribute("href") for c in courses_links]
     nextpage = get_nextpage(browser)
 
@@ -194,8 +246,12 @@ def course_scraper(browser, courses, link):
 
     course = dict()
 # =========================Minimum Requirement Check=============================
-    WebDriverWait(browser, 5).until(EC.presence_of_element_located(
-        (By.XPATH, "//div[contains(@data-content-group,'Landing Page')]//div[@data-purpose='enrollment']")))
+    try:
+        WebDriverWait(browser, 3).until(EC.presence_of_element_located(
+            (By.XPATH, "//div[contains(@data-content-group,'Landing Page')]//div[@data-purpose='enrollment']")))
+    except TimeoutException:
+        print(f"Unable to parse current page. Skipping page :: {link}")
+        return False, courses
     enrolled = browser.find_element_by_xpath(
         "//div[contains(@data-content-group,'Landing Page')]//div[@data-purpose='enrollment']").text.split(" ", 1)[0]
     try:
@@ -206,7 +262,7 @@ def course_scraper(browser, courses, link):
     language = browser.find_element_by_xpath(
         "//div[contains(@data-content-group,'Landing Page')]//div[@class='clp-lead__locale']").text
     # check if students enrolled, number of reviews and language requirements are met
-    if int(enrolled.replace(",", "")) < 500 or int(num_of_reviews.replace(",", "")) < 50 or language != "English":
+    if int(enrolled.replace(",", "")) < 300 or int(num_of_reviews.replace(",", "")) < 30 or language != "English":
         return False, courses  # skip scraping if not
 # ===============================Scrape Page=====================================
     course['link'] = link
@@ -222,10 +278,18 @@ def course_scraper(browser, courses, link):
     summary = browser.find_elements_by_xpath(
         "//div[@class='description__title']/following-sibling::*//*")
     course['summary'] = '\n'.join([s.text for s in summary[:-3]])
-
-    course['number_of_lectures'] = browser.find_element_by_xpath("//span[@class='dib']").text
-    course['total_video_duration'] = browser.find_element_by_xpath(
-        "//span[@class='curriculum-header-length']").text
+    while True:
+        try:
+            course['number_of_lectures'] = browser.find_element_by_xpath(
+                "//span[@class='dib']").text
+            course['total_video_duration'] = browser.find_element_by_xpath(
+                "//span[@class='curriculum-header-length']").text
+            break
+        except NoSuchElementException:
+            return False, courses
+        except StaleElementReferenceException:
+            time.sleep(1)
+            continue
     # expand course lectures if it is possible
     expand_toggle(
         browser, '//a[@data-purpose="load-full-curriculum" or @data-purpose="toggle-section"]')
@@ -240,7 +304,7 @@ def course_scraper(browser, courses, link):
             course['lectures_breakdown'] = list(
                 zip([t.text for t in titles], [d.text for d in duration]))
         except StaleElementReferenceException:
-            time.sleep(2)
+            time.sleep(1)
             continue
         break
 
@@ -276,7 +340,7 @@ def review_scraper(browser, df, cols, link):
 
     """
     # repeat the specified number of times to expand the review section
-    repeats = 5
+    repeats = 100
     while repeats:
         try:
             browser.find_element_by_xpath(
@@ -340,13 +404,11 @@ def expand_toggle(browser, path):
     """
 
     try:
-        toggle = WebDriverWait(browser, 5).until(
+        toggle = WebDriverWait(browser, 3).until(
             EC.visibility_of_element_located((By.XPATH, path)))
-        toggle.click()
+        browser.execute_script("arguments[0].click();", toggle)
     except TimeoutException:
         pass
-    except ElementClickInterceptedException:
-        browser.execute_script("arguments[0].click();", toggle)
 
 
 def get_bio_stats(browser):
@@ -385,7 +447,50 @@ def expose_filter_menu(browser, filter_by):
     exposemenu = browser.find_elements_by_xpath(
         "//label[contains(@class,'js-panel-toggler  panel--label--qoWJs') and @aria-expanded='false']")
     ind = [fltr.text for fltr in exposemenu].index(filter_by)
+    browser.execute_script("arguments[0].click();", exposemenu[ind])
+
+
+def overlay_filter_add(browser, filter_category):
+    """
+
+    This adds filter to narrow down the search results using the filter_category provided.
+    It also adds a filter to limit the language of the courses to English.
+
+    """
+    print('Filtering search results...')
+    # attempt to expose all available selections in the Topic section
+    while True:
+        try:
+            expandtopic = browser.find_element_by_xpath(
+                "//fieldset[@class='filter--filter-container--1ftIU' and @name='Topic']//button")
+            browser.execute_script("arguments[0].click();", expandtopic)
+        except NoSuchElementException:
+            break
+    # find the checkbox that match the filter category and attempt to mark it
+    filtercat = browser.find_elements_by_xpath(
+        "//fieldset[@class='filter--filter-container--1ftIU' and @name='Topic']//span[@class='filter-option--checkbox-content--4HaUs']")
     try:
-        exposemenu[ind].click()
-    except ElementClickInterceptedException:
-        browser.execute_script("arguments[0].click();", exposemenu[ind])
+        indc = [filter_category in cat.text for cat in filtercat].index(True)
+    except ValueError:
+        print("Encountered a problem while filtering search results. Unable to filter by the category given.")
+        browser.quit()
+    checkbox = browser.find_elements_by_xpath(
+        "//fieldset[@class='filter--filter-container--1ftIU' and @name='Topic']//input")[indc]
+    browser.execute_script("arguments[0].click();", checkbox)
+
+    time.sleep(2)
+    # attempt to mark the English language checkbox
+    filterlang = browser.find_elements_by_xpath(
+        "//fieldset[@class='filter--filter-container--1ftIU' and @name='Language']//span[@class='filter-option--checkbox-content--4HaUs']")
+    indl = ['English' in lang.text for lang in filterlang].index(True)
+    checkbox = browser.find_elements_by_xpath(
+        "//fieldset[@class='filter--filter-container--1ftIU' and @name='Language']//input")[indl]
+    browser.execute_script("arguments[0].click();", checkbox)
+
+    time.sleep(1)
+    while True:
+        try:
+            confirm_changes = browser.find_element_by_xpath("//button[contains(text(),'Done')]")
+            browser.execute_script("arguments[0].click();", confirm_changes)
+        except NoSuchElementException:
+            break
