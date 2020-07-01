@@ -240,97 +240,45 @@ def listings_page_iterator(browser, nextpage, page_count, df, cols, courses, lin
 def course_scraper(browser, courses, link):
     """
 
-    This scrapes all details related to the description of the course.
+    This checks if minimum requirements are met before scraping all details related to the description of the course.
 
     """
 
-    course = dict()
 # =========================Minimum Requirement Check=============================
     try:
-        WebDriverWait(browser, 3).until(EC.presence_of_element_located(
-            (By.XPATH, "//div[contains(@data-content-group,'Landing Page')]//div[@data-purpose='enrollment']")))
+        enrolled = WebDriverWait(browser, 3).until(EC.presence_of_element_located((By.XPATH,
+                                                                                   """//div[contains(@data-content-group,'Landing Page')]//div[@data-purpose='enrollment'] |
+         //div[@class='course-landing-page__main-content']//div[@data-purpose='enrollment']"""))).text.split(" ", 1)[0]
     except TimeoutException:
         print(f"Unable to parse current page. Skipping page :: {link}")
         return False, courses
-    enrolled = browser.find_element_by_xpath(
-        "//div[contains(@data-content-group,'Landing Page')]//div[@data-purpose='enrollment']").text.split(" ", 1)[0]
-    try:
-        num_of_reviews = browser.find_element_by_xpath(
-            "//div[contains(@data-content-group,'Landing Page')]//div[@class='rate-count']").text.split()[1][1:]
-    except NoSuchElementException:
-        return False, courses
-    language = browser.find_element_by_xpath(
-        "//div[contains(@data-content-group,'Landing Page')]//div[@class='clp-lead__locale']").text
-    # check if students enrolled, number of reviews and language requirements are met
-    if int(enrolled.replace(",", "")) < 300 or int(num_of_reviews.replace(",", "")) < 30 or language != "English":
-        return False, courses  # skip scraping if not
-# ===============================Scrape Page=====================================
-    course['link'] = link
-    course['title'] = browser.find_element_by_xpath("//h1").text
-    # expand topic section if it is possible and capture info
-    expand_section(
-        browser, "//div[@class='what-you-get']//button[contains(@class,'js-simple-collapse-more-btn')]")
-    topics = browser.find_elements_by_class_name("what-you-get__text")
-    course['topics'] = ', '.join([t.text for t in topics])
-    # expand course description section if it is possible and capture info
-    expand_section(
-        browser, "//div[contains(@data-purpose,'course-description')]//button[contains(@class,js-simple-collapse-more-btn)]")
-    summary = browser.find_elements_by_xpath(
-        "//div[@class='description__title']/following-sibling::*//*")
-    course['summary'] = '\n'.join([s.text for s in summary[:-3]])
-    while True:
+    else:
         try:
-            course['number_of_lectures'] = browser.find_element_by_xpath(
-                "//span[@class='dib']").text
-            course['total_video_duration'] = browser.find_element_by_xpath(
-                "//span[@class='curriculum-header-length']").text
-            break
+            num_of_reviews = browser.find_element_by_xpath(
+                """//div[contains(@data-content-group,'Landing Page')]//div[@class='rate-count'] |
+                //div[@class='course-landing-page__main-content']//div[@data-purpose='rating']""").text
         except NoSuchElementException:
             return False, courses
-        except StaleElementReferenceException:
-            time.sleep(1)
-            continue
-    # expand course lectures if it is possible
-    expand_toggle(
-        browser, '//a[@data-purpose="load-full-curriculum" or @data-purpose="toggle-section"]')
-    expand_toggle(browser, '//a[@class="sections-toggle"]')
-    titles = browser.find_elements_by_xpath(
-        "//div[@data-purpose='course-curriculum']//div[@class='title']")
-    duration = browser.find_elements_by_xpath(
-        "//div[@data-purpose='course-curriculum']//div[@class='details']")
-    # attempt to capture lecture titles and durations; if encountered a change of the DOM, wait 2 seconds
-    while True:
-        try:
-            course['lectures_breakdown'] = list(
-                zip([t.text for t in titles], [d.text for d in duration]))
-        except StaleElementReferenceException:
-            time.sleep(1)
-            continue
-        break
+        language = browser.find_element_by_xpath(
+            """//div[contains(@data-content-group,'Landing Page')]//div[@class='clp-lead__locale'] |
+            //div[@class='course-landing-page__main-content']//div[contains(@class,'clp-lead__locale')]""").text
 
-    course['original_price'] = browser.find_element_by_xpath(
-        "//div[@data-purpose='course-old-price-text']//s/span").text
-    # find out if there is one or more instructors information and process them separately
-    instructors = browser.find_elements_by_class_name("instructor--instructor--2qudS")
-    if len(instructors) > 1:
-        # add '-&-' between the names of instructors
-        course['instructor_name'] = ' -&- '.join([i.find_element_by_class_name(
-            "instructor--title__link--1NJ6S").text for i in instructors])
-        course['instructor_bio'], stats = get_bio_stats(browser)
-        # create a list of different instructors for each stat
-        course['group_instructor_rating'] = stats[::4]
-        course['group_reviews'] = stats[1::4]
-        course['group_students'] = stats[2::4]
-        course['group_courses'] = stats[3::4]
-
+    if '\n' in num_of_reviews:
+        num_of_reviews = num_of_reviews.split('\n')[-1].split()[0][1:]
+        page_format = 'revised'
     else:
-        course['instructor_name'] = instructors[0].find_element_by_class_name(
-            "instructor--title__link--1NJ6S").text
-        course['instructor_bio'], stats = get_bio_stats(browser)
-        course['instructor_rating'], course['total_reviews'], course['total_students'], course['total_courses'] = stats[0], stats[1], stats[2], stats[3]
+        num_of_reviews = num_of_reviews.split()[1][1:]
+        page_format = 'original'
+    # check if students enrolled, number of reviews and language requirements are met
+    if int(enrolled.replace(",", "")) < 500 or int(num_of_reviews.replace(",", "")) < 50 or language != "English":
+        return False, courses  # skip scraping if not
+# ===============================Scrape Page=====================================
+    if page_format == 'original':
+        proceed, courses = scrape_original(browser, courses, link)
+    else:
+        proceed, courses = scrape_revised(browser, courses, link)
 
-    courses.append(course)
-    return True, courses
+    return proceed, courses
 
 
 def review_scraper(browser, df, cols, link):
@@ -340,7 +288,7 @@ def review_scraper(browser, df, cols, link):
 
     """
     # repeat the specified number of times to expand the review section
-    repeats = 100
+    repeats = 5
     while repeats:
         try:
             browser.find_element_by_xpath(
@@ -411,15 +359,15 @@ def expand_toggle(browser, path):
         pass
 
 
-def get_bio_stats(browser):
+def get_bio_stats_original(browser):
     """
 
-    locate and capture instructor bio and stats information
+    locate and capture instructor bio and stats information from original page format
 
     """
 
-    see_more_bio = browser.find_elements_by_class_name(
-        "instructor--view-more-wrapper__button--2egB6")
+    see_more_bio = browser.find_elements_by_xpath(
+        "//button[contains(@class,'instructor--view-more-wrapper__button--2egB6')]")
     for s in see_more_bio:
         try:
             s.click()
@@ -432,6 +380,32 @@ def get_bio_stats(browser):
 
     stats = browser.find_elements_by_xpath(
         "//span[@class='instructor--instructor__stat-value--2Kwe1']")
+    stats = [s.text for s in stats]
+
+    return instructor_bio, stats
+
+
+def get_bio_stats_revised(browser):
+    """
+
+    locate and capture instructor bio and stats information from revised page format
+
+    """
+
+    see_more_bio = browser.find_elements_by_xpath(
+        "//div[@class='styles--instructors--2JsS3']//label")
+    for s in see_more_bio:
+        try:
+            s.click()
+        except ElementClickInterceptedException:
+            browser.execute_script("arguments[0].click();", s)
+
+    bio = browser.find_elements_by_xpath(
+        "//div[@data-purpose='description-content']//p")
+    instructor_bio = '\n'.join([b.text.strip() for b in bio])
+
+    stats = browser.find_elements_by_xpath(
+        "//div[@class='instructor--instructor__image-and-stats--1IqE7']//li")
     stats = [s.text for s in stats]
 
     return instructor_bio, stats
@@ -494,3 +468,155 @@ def overlay_filter_add(browser, filter_category):
             browser.execute_script("arguments[0].click();", confirm_changes)
         except NoSuchElementException:
             break
+
+
+def scrape_original(browser, courses, link):
+    """
+
+    This scrapes course information from original page format
+
+    """
+
+    course = dict()
+    course['link'] = link
+    course['title'] = browser.find_element_by_xpath("//h1").text
+    # expand topic section if it is possible and capture info
+    expand_section(
+        browser, "//div[@class='what-you-get']//button[contains(@class,'js-simple-collapse-more-btn')]")
+    topics = browser.find_elements_by_class_name("what-you-get__text")
+    course['topics'] = ', '.join([t.text for t in topics])
+    # expand course description section if it is possible and capture info
+    expand_section(
+        browser, "//div[contains(@data-purpose,'course-description')]//button[contains(@class,js-simple-collapse-more-btn)]")
+    summary = browser.find_elements_by_xpath(
+        "//div[@class='description__title']/following-sibling::*//*")
+    course['summary'] = '\n'.join([s.text for s in summary[:-3]])
+    while True:
+        try:
+            course['number_of_lectures'] = browser.find_element_by_xpath(
+                "//span[@class='dib']").text
+            course['total_video_duration'] = browser.find_element_by_xpath(
+                "//span[@class='curriculum-header-length']").text
+            break
+        except NoSuchElementException:
+            return False, courses
+        except StaleElementReferenceException:
+            time.sleep(1)
+            continue
+    # expand course lectures if it is possible
+    expand_toggle(
+        browser, '//a[@data-purpose="load-full-curriculum" or @data-purpose="toggle-section"]')
+    expand_toggle(browser, '//a[@class="sections-toggle"]')
+    titles = browser.find_elements_by_xpath(
+        "//div[@data-purpose='course-curriculum']//div[@class='title']")
+    duration = browser.find_elements_by_xpath(
+        "//div[@data-purpose='course-curriculum']//div[@class='details']")
+    # attempt to capture lecture titles and durations; if encountered a change of the DOM, wait 2 seconds
+    while True:
+        try:
+            course['lectures_breakdown'] = list(
+                zip([t.text for t in titles], [d.text for d in duration]))
+        except StaleElementReferenceException:
+            time.sleep(1)
+            continue
+        break
+
+    course['original_price'] = browser.find_element_by_xpath(
+        "//div[@data-purpose='course-old-price-text']//s/span").text
+    # find out if there is one or more instructors information and process them separately
+    instructors = browser.find_elements_by_class_name("instructor--instructor--2qudS")
+    if len(instructors) > 1:
+        # add '-&-' between the names of instructors
+        course['instructor_name'] = ' -&- '.join([i.find_element_by_class_name(
+            "instructor--title__link--1NJ6S").text for i in instructors])
+        course['instructor_bio'], stats = get_bio_stats_original(browser)
+        # create a list of different instructors for each stat
+        course['group_instructor_rating'] = stats[::4]
+        course['group_reviews'] = stats[1::4]
+        course['group_students'] = stats[2::4]
+        course['group_courses'] = stats[3::4]
+
+    else:
+        course['instructor_name'] = instructors[0].find_element_by_class_name(
+            "instructor--title__link--1NJ6S").text
+        course['instructor_bio'], stats = get_bio_stats_original(browser)
+        course['instructor_rating'], course['total_reviews'], course['total_students'], course['total_courses'] = stats[0], stats[1], stats[2], stats[3]
+
+    courses.append(course)
+    return True, courses
+
+
+def scrape_revised(browser, courses, link):
+    """
+
+    This scrapes course information from revised page format
+
+    """
+
+    course = dict()
+    course['link'] = link
+    course['title'] = browser.find_element_by_xpath("//h1").text
+    # expand topic section if it is possible and capture info
+    expand_section(
+        browser, "//div[@class='what-you-will-learn--what-will-you-learn--mnJ5T']//label')]")
+    topics = browser.find_elements_by_class_name("what-you-will-learn--objectives-list--2cWZN")
+    course['topics'] = ', '.join([t.text for t in topics])
+    # expand course description section if it is possible and capture info
+    expand_section(
+        browser, "//div[contains(@class,'styles--description--3y4KY')]//label")
+    summary = browser.find_elements_by_xpath(
+        "//div[@data-purpose='safely-set-inner-html:description:description']//p")
+    course['summary'] = '\n'.join([s.text for s in summary[:-3]])
+    while True:
+        try:
+            course['number_of_lectures'] = browser.find_element_by_xpath(
+                "//div[@data-purpose='curriculum-stats']").text.split(' • ')[1]
+            course['total_video_duration'] = browser.find_element_by_xpath(
+                "//div[@data-purpose='curriculum-stats']").text.split(' • ')[2][:-12]
+            break
+        except NoSuchElementException:
+            return False, courses
+        except StaleElementReferenceException:
+            time.sleep(1)
+            continue
+    # expand course lectures if it is possible
+    expand_toggle(
+        browser, '//button[contains(@class,"curriculum--show-more--2tshH")]')
+    expand_toggle(browser, '//button[@data-purpose="expand-toggle"]')
+    titles = browser.find_elements_by_xpath(
+        "//div[@class='section--lecture-title-and-description--3lul7']")
+    duration = browser.find_elements_by_xpath(
+        "//span[@class='section--lecture-content--2I4Bi']")
+    # attempt to capture lecture titles and durations; if encountered a change of the DOM, wait 2 seconds
+    while True:
+        try:
+            course['lectures_breakdown'] = list(
+                zip([t.text for t in titles], [d.text for d in duration]))
+        except StaleElementReferenceException:
+            time.sleep(1)
+            continue
+        break
+
+    course['original_price'] = browser.find_element_by_xpath(
+        "//div[contains(@class,'course-landing-page__purchase-section__main')]//div[@data-purpose='original-price-container']//s/span").text
+    # find out if there is one or more instructors information and process them separately
+    instructors = browser.find_elements_by_class_name("styles--instructors--2JsS3")
+    if len(instructors) > 1:
+        # add '-&-' between the names of instructors
+        course['instructor_name'] = ' -&- '.join([i.find_element_by_class_name(
+            "instructor--instructor__title--34ItB").text for i in instructors])
+        course['instructor_bio'], stats = get_bio_stats_revised(browser)
+        # create a list of different instructors for each stat
+        course['group_instructor_rating'] = stats[::4]
+        course['group_reviews'] = stats[1::4]
+        course['group_students'] = stats[2::4]
+        course['group_courses'] = stats[3::4]
+
+    else:
+        course['instructor_name'] = instructors[0].find_element_by_class_name(
+            "instructor--instructor__title--34ItB").text
+        course['instructor_bio'], stats = get_bio_stats_revised(browser)
+        course['instructor_rating'], course['total_reviews'], course['total_students'], course['total_courses'] = stats[0], stats[1], stats[2], stats[3]
+
+    courses.append(course)
+    return True, courses

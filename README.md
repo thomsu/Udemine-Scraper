@@ -1,2 +1,7 @@
-# Udemy-Courses-Scraper
-It scrapes course description and reviews from Udemy.
+# Udemine-Scraper
+
+A simple easy-to-use Python package that retrieves course description and reviews from Udemy and returns the data in two Pandas DataFrames. Just download the file and place it in the same folder as your project code; Make sure that the Python environment has both Pandas and Selenium installed and the appropriate version of the ChromeDriver has already been set up. For additional help with installing the ChromeDriver, please visit: https://github.com/SeleniumHQ/selenium/wiki/ChromeDriver
+
+## How It Works
+
+This program relies on Selenium to gather and parse information on Udemy. To test out the package, simply run the program as is and it will proceed to crawl Data Science/Machine Learning course description and reviews which is the default setting. For other search criteria, pass the both the search term and the topic filter category in the function. As an example, if you are interested in gathering information on Productivity, Time Management courses, call the function by udemine.scraper(search_term="Personal Productivity", filter_category="Time Management") and assigning two variables to the function return. Looking to scrape courses from multiple related topics and wanting to avoid links that have already been through, you can do that by passing a list of links to the function using the keyword "previous_links" And to obtain this list from previous searches is pretty simple; you just need to grab the attribute from the Pandas Udemy courses DataFrame and convert the DataSeries to a list.
