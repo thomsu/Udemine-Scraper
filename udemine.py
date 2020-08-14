@@ -124,12 +124,13 @@ def panel_filter_add(browser, filter_category):
     filtercat = browser.find_elements_by_xpath(
         "//div[@class='panel--content-wrapper--1yFBX']//fieldset[@name='Topic']//span[@class='filter--count--33UW8']/parent::node()")
     try:
-        indc = [cat.text.split("(")[0] for cat in filtercat].index(filter_category)
+        indc = [cat.text.split("\n")[0]
+                for cat in filtercat].index(filter_category)
     except ValueError:
-        catlist = ', '.join([cat.text.split("(")[0] for cat in filtercat])
+        catlist = ', '.join([cat.text.split("\n")[0] for cat in filtercat])
         browser.quit()
         raise ValueError(
-            f"Encountered a problem while filtering search results. Unable to filter by the category given. Categories::{catlist}")
+            f"Encountered a problem while filtering search results. Unable to filter by the category given, {filter_category}. Categories::{catlist}")
 
     checkbox = browser.find_elements_by_xpath(
         "//div[@class='panel--content-wrapper--1yFBX']//fieldset[@name='Topic']//input")[indc]
@@ -145,7 +146,8 @@ def panel_filter_add(browser, filter_category):
     # attempt to mark the English language checkbox
     filterlang = browser.find_elements_by_xpath(
         "//div[@class='panel--content-wrapper--1yFBX']//fieldset[@name='Language']//span[@class='filter--count--33UW8']/parent::node()")
-    indl = [lang.text.split("(")[0] for lang in filterlang].index('English')
+    indl = [lang.text.split("(")[0].split("\n")[0]
+            for lang in filterlang].index('English')
     checkbox = browser.find_elements_by_xpath(
         "//div[@class='panel--content-wrapper--1yFBX']//fieldset[@name='Language']//input")[indl]
     browser.execute_script("arguments[0].click();", checkbox)
@@ -300,7 +302,7 @@ def review_scraper(browser, df, cols, link):
         repeats -= 1
     # expand to reveal the complete review of long reviews that are partially hidden
     see_more = browser.find_elements_by_xpath(
-        "//div[@data-purpose='landing-page-review-list']//button[contains(@class,'view-more-container--view-more__collapse-btn--1bVN9 btn btn-link')]")
+        "//div[@data-purpose='landing-page-review-list']//label[contains(@class,'show-more--focusable-label--14fP5')]")
     if see_more:
         for s in see_more:
             try:
@@ -318,11 +320,11 @@ def review_scraper(browser, df, cols, link):
     customer_name = [c.text for c in customers]
 
     stars = browser.find_elements_by_xpath(
-        "//div[@data-purpose='landing-page-review-list']//div[@data-purpose='star-rating-shell']")
-    ratings = [s.get_attribute("aria-label")[8:] for s in stars]
+        "//div[@data-purpose='landing-page-review-list']//span[@class='udlite-sr-only']")
+    ratings = [s.text[8:] for s in stars]
 
     posted_when = browser.find_elements_by_xpath(
-        "//div[@data-purpose='landing-page-review-list']//div[@class='individual-review--detail-created--1liJC']")
+        "//div[@data-purpose='landing-page-review-list']//span[contains(@class,'individual-review--individual-review__detail-date--DEkVn')]")
     time_posted = [w.text for w in posted_when]
 
     return pd.concat([df, pd.DataFrame(list(zip(course_link, customer_name, time_posted, review, ratings)), columns=cols)], ignore_index=True)
@@ -576,6 +578,8 @@ def scrape_revised(browser, courses, link):
             break
         except NoSuchElementException:
             return False, courses
+        except IndexError:
+            return False, courses
         except StaleElementReferenceException:
             time.sleep(1)
             continue
@@ -597,8 +601,13 @@ def scrape_revised(browser, courses, link):
             continue
         break
 
-    course['original_price'] = browser.find_element_by_xpath(
-        "//div[contains(@class,'course-landing-page__purchase-section__main')]//div[@data-purpose='original-price-container']//s/span").text
+    # Free courses will not be scraped.
+    try:
+        course['original_price'] = browser.find_element_by_xpath(
+            "//div[contains(@class,'course-landing-page__purchase-section__main')]//div[@data-purpose='original-price-container']//s/span").text
+    except NoSuchElementException:
+        return False, courses
+
     # find out if there is one or more instructors information and process them separately
     instructors = browser.find_elements_by_class_name("styles--instructors--2JsS3")
     if len(instructors) > 1:
